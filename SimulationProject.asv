@@ -1,0 +1,13 @@
+% PLL Simulation Project
+clear; clc; close all;
+
+R1= 100e3;          % 100k ohm
+R2 = 1.4e3;         % 1.4k ohm
+C_loop = 1e-6;      % 1uF
+wn = 1000;          % Loop Natural Frequency
+zeta = 1/sqrt(2);   %        
+Bi = 1e4;
+BL = 500;
+R_b = 3000;
+T = 1/R_b;
+
