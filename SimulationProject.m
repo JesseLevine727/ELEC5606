@@ -12,4 +12,118 @@ R_b = 3000;         % Bit rate
 T = 1/R_b;          % Bit duration
 
 
+tau_1 = R1*C_loop;
+K = (wn^2) * tau_1;
 
+% simulation setup
+fs = 200e3; % sampling freq
+Ts = 1/fs;
+fc = 10e3; % carrier Freq
+
+EbNo_dB_vec = 0:0.5:20;
+BER_sim = zeros(size(EbNo_dB_vec));
+num_bits = 10e3;
+
+% Costas Loop arm filters
+fc_arm = (2*Bi) / pi;
+alpha = (2*pi*fc_arm*Ts) / (1+2*pi*fc_arm*Ts);
+
+%%  MAIN LOOP
+for i = 1:length(EbNo_dB_vec)
+    target_EbNo = EbNo_dB_vec(i);
+    
+    % --- A. SIGNAL GENERATION ---
+    bits = randi([0 1], 1, num_bits);
+    data_seq = 2*bits - 1; % NRZ
+    
+    % Upsample to fs
+    samples_per_bit = floor(fs/R_b);
+    m_t = rectpulse(data_seq, samples_per_bit);
+    
+    % Carrier Modulation (Unknown Phase)
+    total_samples = length(m_t);
+    t = (0:total_samples-1) * Ts;
+    true_phase = pi/3; % Arbitrary offset
+    s_t = m_t .* cos(2*pi*fc*t + true_phase);
+    
+    % --- B. NOISE GENERATION ---
+    % Eb = 0.5 * T (Since A=1, S=0.5)
+    Eb = 0.5 * T;
+    No = Eb / (10^(target_EbNo/10));
+    
+    % Noise Variance for Simulation Bandwidth (fs/2)
+    noise_var = No * (fs/2);
+    noise = sqrt(noise_var) * randn(size(s_t));
+    
+    r_t = s_t + noise;
+    
+    % --- C. COSTAS LOOP ---
+    phi_vco = 0;
+    integ_mem = 0;
+    
+    % Loop Filter Coefficients (Discrete PI)
+    % Kp (Proportional) = R2/R1
+    % Ki (Integral) = 1/(R1*C)
+    Kp = R2 / R1;
+    Ki = 1 / (R1 * C_loop);
+    
+    I_dump = zeros(size(r_t)); % For detection
+    
+    % State variables for arm filters
+    I_filt = 0; Q_filt = 0;
+    
+    for n = 1:total_samples
+        % 1. VCO Output
+        ref_I = 2 * cos(2*pi*fc*t(n) + phi_vco);
+        ref_Q = 2 * sin(2*pi*fc*t(n) + phi_vco);
+        
+        % 2. Mixing
+        mix_I = r_t(n) * ref_I;
+        mix_Q = r_t(n) * ref_Q;
+        
+        % 3. Arm Filtering
+        I_filt = I_filt + alpha * (mix_I - I_filt);
+        Q_filt = Q_filt + alpha * (mix_Q - Q_filt);
+        I_dump(n) = I_filt;
+        
+        % 4. Phase Detector
+        error = I_filt * Q_filt;
+        
+        % 5. Loop Filter (Active PI)
+        integ_mem = integ_mem + (Ki * error * Ts);
+        v_ctrl = (Kp * error) + integ_mem;
+        
+        % 6. VCO Update
+        phi_vco = phi_vco + (K * v_ctrl * Ts);
+    end
+    
+    % --- D. DETECTION ---
+    rx_bits = zeros(1, num_bits);
+    for b = 1:num_bits
+        idx_s = (b-1)*samples_per_bit + 1;
+        idx_e = b*samples_per_bit;
+        if sum(I_dump(idx_s:idx_e)) > 0
+            rx_bits(b) = 1;
+        else
+            rx_bits(b) = 0;
+        end
+    end
+    
+    % Handle Ambiguity
+    errs = min(sum(bits ~= rx_bits), sum(bits ~= ~rx_bits));
+    BER_sim(i) = errs / num_bits;
+end
+
+% plot 
+EbNo_lin = 10.^(EbNo_dB_vec/10);
+BER_theory = 0.5 * erfc(sqrt(EbNo_lin));
+
+figure;
+semilogy(EbNo_dB_vec, BER_theory, 'k-', 'LineWidth', 2); hold on;
+semilogy(EbNo_dB_vec, BER_sim, 'bo--', 'LineWidth', 1.5);
+grid on;
+legend('Ideal BPSK', 'Costas Loop (3kbps)');
+xlabel('Eb/No (dB)');
+ylabel('BER');
+title('Costas Loop Performance: R1=100k, R2=1.4k, C=1uF');
+axis([0 15 1e-10 1]);
